@@ -28,7 +28,7 @@ class MiciHazardAheadRenderer(HazardAheadRenderer):
     super().__init__(fetcher)
 
   def _draw_card(self, rect: rl.Rectangle, hazard: HazardAhead, distance_m: float, passed: bool = False) -> None:
-    # Position top-right, left of the 60px side panel
+    # Position top-right of the camera area, left of the side panel
     x = rect.x + rect.width - SIDE_PANEL_WIDTH - CARD_WIDTH - CARD_MARGIN
     y = rect.y + CARD_MARGIN
     card_rect = rl.Rectangle(x, y, CARD_WIDTH, CARD_HEIGHT)

@@ -152,9 +152,9 @@ class HazardAheadRenderer(Widget):
     return hazard, dist, warn_distance_m
 
   def _draw_card(self, rect: rl.Rectangle, hazard: HazardAhead, distance_m: float, passed: bool = False) -> None:
-    # Position in the top-right corner of the content rect.
+    # Position in the bottom-right corner of the content rect.
     x = rect.x + rect.width - CARD_WIDTH - CARD_MARGIN
-    y = rect.y + CARD_MARGIN
+    y = rect.y + rect.height - CARD_HEIGHT - CARD_MARGIN
     card_rect = rl.Rectangle(x, y, CARD_WIDTH, CARD_HEIGHT)
 
     roundness = CARD_RADIUS / (min(CARD_WIDTH, CARD_HEIGHT) / 2)
