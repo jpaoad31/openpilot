@@ -8,6 +8,7 @@ from openpilot.selfdrive.ui import UI_BORDER_SIZE
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.onroad.alert_renderer import AlertRenderer
 from openpilot.selfdrive.ui.onroad.bump_detector import BumpDetector
+from openpilot.selfdrive.ui.onroad.demo_triggers import DemoTriggers
 from openpilot.selfdrive.ui.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.onroad.hazard_ahead_renderer import HazardAheadRenderer
 from openpilot.selfdrive.ui.onroad.hazard_fetcher import HazardFetcher
@@ -71,6 +72,7 @@ class AugmentedRoadView(CameraView):
     self.driver_state_renderer = DriverStateRenderer()
 
     self._bump_detector = BumpDetector()
+    self._demo_triggers = DemoTriggers()
     self._hazard_popup = HazardPopup()
     self._hazard_reporter = HazardReporter()
     self._hazard_fetcher = HazardFetcher()
@@ -127,17 +129,23 @@ class AugmentedRoadView(CameraView):
     self.driver_state_renderer.render(self._content_rect)
     self._hazard_ahead_renderer.render(self._content_rect)
 
-    # Show hazard popup on bump detection or manual SSH trigger
+    # Show hazard popup on bump detection, demo geofence trigger, or manual SSH trigger
     bump_fired = self._bump_detector.update(ui_state.sm['carState'].aEgo)
-    manual_fired = not bump_fired and os.path.exists(HAZARD_TRIGGER_FILE)
+    demo_fired = not bump_fired and gps.hasFix and self._demo_triggers.check(gps.latitude, gps.longitude)
+    manual_fired = not bump_fired and not demo_fired and os.path.exists(HAZARD_TRIGGER_FILE)
     if manual_fired:
       os.remove(HAZARD_TRIGGER_FILE)
 
-    if bump_fired:
-      diag = self._bump_detector.consume_last_trigger_diag() or {}
-      comma1_metrics.record_bump_trigger(diag)
+    hazard_detected = bump_fired or demo_fired
+    if hazard_detected:
+      if bump_fired:
+        diag = self._bump_detector.consume_last_trigger_diag() or {}
+        comma1_metrics.record_bump_trigger(diag)
+        trigger_source = "bump_detector"
+      else:
+        trigger_source = "demo_trigger"
 
-      # Check if this bump matches a known hazard within 50m
+      # Check if this matches a known hazard within 50m
       nearby = self._find_nearby_known_hazard(gps)
       if nearby is not None and nearby.device_previously_reported:
         # Returning user hitting the same hazard — auto-confirm, no popup
@@ -146,7 +154,7 @@ class AugmentedRoadView(CameraView):
         comma1_metrics.record_auto_confirm()
       else:
         # New hazard, or first time this device encounters a known one — show popup
-        self._show_hazard_popup(gps, "bump_detector")
+        self._show_hazard_popup(gps, trigger_source)
     elif manual_fired:
       comma1_metrics.record_manual_trigger()
       self._show_hazard_popup(gps, "manual")
