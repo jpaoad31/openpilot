@@ -46,12 +46,14 @@ class HazardAheadRenderer(Widget):
   def __init__(self, fetcher: HazardFetcher):
     super().__init__()
     self._fetcher = fetcher
-    # event_id → monotonic time when the card first became visible
+    # hazard_id → monotonic time when the card first became visible
     self._show_start: dict[str, float] = {}
-    # event_id → monotonic time when the hazard first went behind the device
+    # hazard_id → monotonic time when the hazard first went behind the device
     self._passed_at: dict[str, float] = {}
-    # event_ids that have been dismissed and should never show again
+    # hazard_ids that have been dismissed and should never show again
     self._suppressed: set[str] = set()
+    # hazard_ids that were just suppressed via the passed path, pending consume
+    self._newly_passed: list[str] = []
 
   def _render(self, rect: rl.Rectangle):
     gps = ui_state.sm['gpsLocationExternal']
@@ -74,7 +76,7 @@ class HazardAheadRenderer(Widget):
       return
 
     hazard, dist = closest
-    passed = hazard.event_id in self._passed_at
+    passed = hazard.hazard_id in self._passed_at
     self._draw_card(rect, hazard, dist, passed)
 
   def _find_closest(
@@ -90,8 +92,8 @@ class HazardAheadRenderer(Widget):
     closest_dist = float('inf')
 
     for hazard in hazards:
-      eid = hazard.event_id
-      if eid in self._suppressed:
+      hid = hazard.hazard_id
+      if hid in self._suppressed:
         continue
 
       dist = hazard.distance_m(device_lat, device_lon)
@@ -99,29 +101,30 @@ class HazardAheadRenderer(Widget):
       is_behind = _bearing_delta(device_bearing, bearing_to) > AHEAD_THRESHOLD_DEG
 
       # Start the visibility clock the first time this hazard enters warn range.
-      if dist <= warn_distance_m and eid not in self._show_start:
-        self._show_start[eid] = now
+      if dist <= warn_distance_m and hid not in self._show_start:
+        self._show_start[hid] = now
 
       # Not yet in warning range — skip without suppressing.
-      if eid not in self._show_start:
+      if hid not in self._show_start:
         continue
 
       # Suppress after the overall timeout.
-      if now - self._show_start[eid] > SHOW_TIMEOUT:
-        self._suppressed.add(eid)
+      if now - self._show_start[hid] > SHOW_TIMEOUT:
+        self._suppressed.add(hid)
         continue
 
       # Track when the hazard first goes behind us.
-      if is_behind and eid not in self._passed_at:
-        self._passed_at[eid] = now
+      if is_behind and hid not in self._passed_at:
+        self._passed_at[hid] = now
 
       # Clear passed state if the hazard comes back ahead (e.g. driver U-turns).
-      if not is_behind and eid in self._passed_at:
-        del self._passed_at[eid]
+      if not is_behind and hid in self._passed_at:
+        del self._passed_at[hid]
 
       # Suppress after the post-pass linger expires.
-      if eid in self._passed_at and now - self._passed_at[eid] > PASSED_LINGER:
-        self._suppressed.add(eid)
+      if hid in self._passed_at and now - self._passed_at[hid] > PASSED_LINGER:
+        self._suppressed.add(hid)
+        self._newly_passed.append(hid)
         continue
 
       if dist < closest_dist:
@@ -129,6 +132,16 @@ class HazardAheadRenderer(Widget):
         closest_dist = dist
 
     return (closest_hazard, closest_dist) if closest_hazard is not None else None
+
+  def consume_newly_passed(self) -> list[str]:
+    """
+    Return hazard_ids that were just suppressed via the passed-linger path
+    since the last call, then clear the list. The caller uses this to fire
+    confirm/clear requests.
+    """
+    ids = list(self._newly_passed)
+    self._newly_passed.clear()
+    return ids
 
   def get_active_ahead_hazard(
     self,
@@ -167,12 +180,13 @@ class HazardAheadRenderer(Widget):
       line_main = f"Hazard ahead  \xb7  {dist_str}"
     if hazard.score is not None:
       sc = hazard.score
-      if sc.responded > 0:
-        line_sub = f"Score {sc.score_pct}% · {sc.tier_label} · {sc.yes}/{sc.responded} yes"
+      confirmed = sc.confirm_count + sc.reject_count
+      if confirmed > 0:
+        line_sub = f"Score {sc.score_pct}% · {sc.tier_label} · {sc.confirm_count}/{confirmed} confirmed"
       else:
-        line_sub = f"Score {sc.score_pct}% · {sc.tier_label} · server"
+        line_sub = f"Score {sc.score_pct}% · {sc.tier_label} · {sc.report_count} reports"
     else:
-      line_sub = "Score: not enough driver votes yet"
+      line_sub = "Not enough data yet"
 
     font = gui_app.font(FontWeight.BOLD)
     sz_m = measure_text_cached(font, line_main, FONT_SIZE_MAIN)

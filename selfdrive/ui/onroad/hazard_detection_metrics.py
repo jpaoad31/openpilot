@@ -34,6 +34,8 @@ class Comma1MetricsSnapshot:
   post_events_fail: int = 0
   patch_response_ok: int = 0
   patch_response_fail: int = 0
+  auto_confirms: int = 0
+  auto_clears: int = 0
   last_bump_a_ego_ms2: float | None = None
   last_bump_jerk_ms3: float | None = None
   last_trigger_source: str | None = None
@@ -148,6 +150,21 @@ class HazardDetectionMetrics:
     cloudlog.info(
       f"{_LOG_PREFIX} patch_response ok={ok} totals ok={self._m.snapshot.patch_response_ok} fail={self._m.snapshot.patch_response_fail}",
     )
+
+
+  def record_auto_confirm(self) -> None:
+    with self._lock:
+      self._m.snapshot.auto_confirms += 1
+      n = self._m.snapshot.auto_confirms
+      self._persist()
+    cloudlog.info(f"{_LOG_PREFIX} auto_confirm n={n}")
+
+  def record_auto_clear(self) -> None:
+    with self._lock:
+      self._m.snapshot.auto_clears += 1
+      n = self._m.snapshot.auto_clears
+      self._persist()
+    cloudlog.info(f"{_LOG_PREFIX} auto_clear n={n}")
 
 
 metrics = HazardDetectionMetrics()
