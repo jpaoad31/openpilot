@@ -180,11 +180,7 @@ class HazardAheadRenderer(Widget):
       line_main = f"Hazard ahead  \xb7  {dist_str}"
     if hazard.score is not None:
       sc = hazard.score
-      confirmed = sc.confirm_count + sc.reject_count
-      if confirmed > 0:
-        line_sub = f"Score {sc.score_pct}% · {sc.tier_label} · {sc.confirm_count}/{confirmed} confirmed"
-      else:
-        line_sub = f"Score {sc.score_pct}% · {sc.tier_label} · {sc.report_count} reports"
+      line_sub = f"{sc.tier_label} confidence  \xb7  {sc.score_pct}%"
     else:
       line_sub = "Not enough data yet"
 
