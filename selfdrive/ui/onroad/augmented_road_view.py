@@ -139,21 +139,23 @@ class AugmentedRoadView(CameraView):
 
       # Check if this bump matches a known hazard within 50m
       nearby = self._find_nearby_known_hazard(gps)
-      if nearby is not None:
-        # Auto-confirm — no popup needed
+      if nearby is not None and nearby.device_previously_reported:
+        # Returning user hitting the same hazard — auto-confirm, no popup
         self._hazard_reporter.confirm(nearby.hazard_id, gps.latitude, gps.longitude)
         self._confirmed_hazard_ids.add(nearby.hazard_id)
         comma1_metrics.record_auto_confirm()
       else:
-        # New hazard — existing popup flow
+        # New hazard, or first time this device encounters a known one — show popup
         self._show_hazard_popup(gps, "bump_detector")
     elif manual_fired:
       comma1_metrics.record_manual_trigger()
       self._show_hazard_popup(gps, "manual")
 
-    # Send "cleared" for known hazards the device passed without a bump
-    for hazard_id in self._hazard_ahead_renderer.consume_newly_passed():
-      if hazard_id not in self._confirmed_hazard_ids and gps.hasFix:
+    # Send confirm/clear for hazards the device visited (< 30m) then departed (> 100m)
+    for hazard_id in self._hazard_ahead_renderer.consume_departed():
+      if hazard_id in self._confirmed_hazard_ids:
+        pass  # already auto-confirmed via bump match
+      elif gps.hasFix:
         self._hazard_reporter.clear(hazard_id, gps.latitude, gps.longitude)
         comma1_metrics.record_auto_clear()
 

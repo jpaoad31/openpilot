@@ -20,10 +20,13 @@ CARD_BG = rl.Color(170, 85, 0, 230)    # dark amber, semi-transparent
 # How long to display the warning for a single hazard before suppressing it.
 SHOW_TIMEOUT = 30.0  # seconds
 
-# How long to keep showing the card after the hazard has been passed.
-PASSED_LINGER = 2.0  # seconds
+# Proximity thresholds for the confirm/clear lifecycle:
+#   VISIT_RADIUS_M  — device must come within this distance to count as "visited"
+#   DEPART_RADIUS_M — after visiting, device must exceed this distance to trigger confirm/clear
+VISIT_RADIUS_M = 30.0
+DEPART_RADIUS_M = 100.0
 
-# Bearing window that counts as "ahead".
+# Bearing window that counts as "ahead" (for card display only).
 AHEAD_THRESHOLD_DEG = 90.0
 
 
@@ -34,13 +37,14 @@ class HazardAheadRenderer(Widget):
   warning distance.
 
   Per-hazard lifecycle:
-    - First appears when the hazard enters warning range and is ahead.
-    - After passing (bearing delta > 90°), lingers for 2 more seconds.
-    - Suppressed (removed) when any of the following occur:
-        1. The 2-second post-pass linger expires.
-        2. The warning has been visible for 30 seconds (timeout).
-    - Suppression persists for the remainder of the drive — the hazard will
-      not reappear even if it is returned by a subsequent API fetch.
+    - Card appears when the hazard enters warning range and is ahead.
+    - Card shows "Hazard passed" once the bearing flips behind the device.
+    - Proximity-based confirm/clear trigger:
+        1. Device comes within VISIT_RADIUS_M (30m) → marked as "visited".
+        2. Device moves beyond DEPART_RADIUS_M (100m) after visiting → emitted
+           via consume_departed() so the caller can send confirm or clear.
+    - Suppressed (card removed) when departed OR after 30s timeout.
+    - Suppression persists for the drive session.
   """
 
   def __init__(self, fetcher: HazardFetcher):
@@ -48,12 +52,12 @@ class HazardAheadRenderer(Widget):
     self._fetcher = fetcher
     # hazard_id → monotonic time when the card first became visible
     self._show_start: dict[str, float] = {}
-    # hazard_id → monotonic time when the hazard first went behind the device
-    self._passed_at: dict[str, float] = {}
+    # hazard_ids where the device came within VISIT_RADIUS_M
+    self._visited: set[str] = set()
     # hazard_ids that have been dismissed and should never show again
     self._suppressed: set[str] = set()
-    # hazard_ids that were just suppressed via the passed path, pending consume
-    self._newly_passed: list[str] = []
+    # hazard_ids that just departed (visited then exceeded DEPART_RADIUS_M), pending consume
+    self._newly_departed: list[str] = []
 
   def _render(self, rect: rl.Rectangle):
     gps = ui_state.sm['gpsLocationExternal']
@@ -76,8 +80,8 @@ class HazardAheadRenderer(Widget):
       return
 
     hazard, dist = closest
-    passed = hazard.hazard_id in self._passed_at
-    self._draw_card(rect, hazard, dist, passed)
+    is_behind = _bearing_delta(device_bearing, hazard.bearing_deg(device_lat, device_lon)) > AHEAD_THRESHOLD_DEG
+    self._draw_card(rect, hazard, dist, passed=is_behind)
 
   def _find_closest(
     self,
@@ -97,8 +101,6 @@ class HazardAheadRenderer(Widget):
         continue
 
       dist = hazard.distance_m(device_lat, device_lon)
-      bearing_to = hazard.bearing_deg(device_lat, device_lon)
-      is_behind = _bearing_delta(device_bearing, bearing_to) > AHEAD_THRESHOLD_DEG
 
       # Start the visibility clock the first time this hazard enters warn range.
       if dist <= warn_distance_m and hid not in self._show_start:
@@ -113,18 +115,14 @@ class HazardAheadRenderer(Widget):
         self._suppressed.add(hid)
         continue
 
-      # Track when the hazard first goes behind us.
-      if is_behind and hid not in self._passed_at:
-        self._passed_at[hid] = now
+      # Track visit: device came close enough to the hazard location.
+      if dist <= VISIT_RADIUS_M:
+        self._visited.add(hid)
 
-      # Clear passed state if the hazard comes back ahead (e.g. driver U-turns).
-      if not is_behind and hid in self._passed_at:
-        del self._passed_at[hid]
-
-      # Suppress after the post-pass linger expires.
-      if hid in self._passed_at and now - self._passed_at[hid] > PASSED_LINGER:
+      # Depart: device visited and is now far enough away — trigger confirm/clear.
+      if hid in self._visited and dist > DEPART_RADIUS_M:
         self._suppressed.add(hid)
-        self._newly_passed.append(hid)
+        self._newly_departed.append(hid)
         continue
 
       if dist < closest_dist:
@@ -133,14 +131,14 @@ class HazardAheadRenderer(Widget):
 
     return (closest_hazard, closest_dist) if closest_hazard is not None else None
 
-  def consume_newly_passed(self) -> list[str]:
+  def consume_departed(self) -> list[str]:
     """
-    Return hazard_ids that were just suppressed via the passed-linger path
-    since the last call, then clear the list. The caller uses this to fire
-    confirm/clear requests.
+    Return hazard_ids that the device visited (came within 30m) and then
+    departed (moved beyond 100m) since the last call. The caller uses this
+    to fire confirm/clear requests.
     """
-    ids = list(self._newly_passed)
-    self._newly_passed.clear()
+    ids = list(self._newly_departed)
+    self._newly_departed.clear()
     return ids
 
   def get_active_ahead_hazard(

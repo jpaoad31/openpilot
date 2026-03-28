@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 import requests
 
+from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.onroad.hazard_scoring import HazardScore, hazard_score_from_api
 
@@ -107,6 +108,7 @@ class HazardAhead:
   report_count: int = 0
   confirm_count: int = 0
   reject_count: int = 0
+  device_previously_reported: bool = False
   score: HazardScore | None = None
 
   @classmethod
@@ -122,6 +124,7 @@ class HazardAhead:
       report_count=int(data.get('report_count', 0)),
       confirm_count=int(data.get('confirm_count', 0)),
       reject_count=int(data.get('reject_count', 0)),
+      device_previously_reported=bool(data.get('device_previously_reported', False)),
       score=hazard_score_from_api(data),
     )
 
@@ -150,6 +153,7 @@ class HazardFetcher:
   def __init__(self):
     self._session = requests.Session()
     self._lock = threading.Lock()
+    self._dongle_id = Params().get("DongleId") or "unknown"
 
     # Written by the main thread, read by the worker.
     self._gps: tuple[float, float, float, float, bool] | None = None  # lat, lon, bearing, speed_ms, has_fix
@@ -216,7 +220,7 @@ class HazardFetcher:
     try:
       resp = self._session.get(
         f"{BASE_URL}/hazards/ahead",
-        params={"lat": lat, "lon": lon, "bearing": bearing, "radius_m": radius_m},
+        params={"lat": lat, "lon": lon, "bearing": bearing, "radius_m": radius_m, "dongle_id": self._dongle_id},
         timeout=TIMEOUT,
       )
       resp.raise_for_status()
