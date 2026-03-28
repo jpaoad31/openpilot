@@ -11,10 +11,9 @@ from openpilot.selfdrive.ui.onroad.hazard_fetcher import _haversine
 
 DEMO_TRIGGERS = [
   {"lat": 32.83811, "lon": -117.23467, "radius_m": 5, "probability": 1.0, "label": "hazard near 32.838/-117.235"},
-  {"lat": 32.79748, "lon": -117.20979, "radius_m": 5, "probability": 1.0, "label": "hazard near 32.797/-117.210"},
-  {"lat": 32.75845, "lon": -117.20352, "radius_m": 5, "probability": 1.0, "label": "hazard near 32.758/-117.204"},
+  {"lat": 32.79748, "lon": -117.20979, "radius_m": 5, "probability": 0.5, "label": "hazard near 32.797/-117.210"},
+  {"lat": 32.75845, "lon": -117.20352, "radius_m": 5, "probability": 0.2, "label": "hazard near 32.758/-117.204"},
 ]
-
 
 class DemoTriggers:
   def __init__(self):
