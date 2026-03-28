@@ -177,7 +177,7 @@ class HazardReporter:
     self._send_confirm(hazard_id, "cleared", lat, lon)
 
   def _send_confirm(self, hazard_id: str, confirmation: str, lat: float, lon: float) -> None:
-    dongle_id = self._params.get("DongleId", encoding="utf8") or "unknown"
+    dongle_id = self._params.get("DongleId") or "unknown"
     threading.Thread(
       target=self._post_confirm,
       args=(hazard_id, dongle_id, confirmation, lat, lon),
