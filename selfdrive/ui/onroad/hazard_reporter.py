@@ -165,3 +165,39 @@ class HazardReporter:
     except Exception as e:
       cloudlog.error(f"HazardReporter PATCH /events/response failed: {e}")
       comma1_metrics.record_patch_result(False)
+
+  # ── hazard confirm/clear ───────────────────────────────────────────────────
+
+  def confirm(self, hazard_id: str, lat: float, lon: float) -> None:
+    """Auto-confirm a known hazard that was re-detected by the bump detector."""
+    self._send_confirm(hazard_id, "confirmed", lat, lon)
+
+  def clear(self, hazard_id: str, lat: float, lon: float) -> None:
+    """Auto-clear a known hazard that the device passed without a bump."""
+    self._send_confirm(hazard_id, "cleared", lat, lon)
+
+  def _send_confirm(self, hazard_id: str, confirmation: str, lat: float, lon: float) -> None:
+    dongle_id = self._params.get("DongleId") or "unknown"
+    threading.Thread(
+      target=self._post_confirm,
+      args=(hazard_id, dongle_id, confirmation, lat, lon),
+      daemon=True,
+    ).start()
+
+  def _post_confirm(self, hazard_id: str, dongle_id: str, confirmation: str, lat: float, lon: float) -> None:
+    try:
+      resp = self._session.post(
+        f"{BASE_URL}/hazards/confirm",
+        json={
+          "hazard_id": hazard_id,
+          "dongle_id": dongle_id,
+          "confirmation": confirmation,
+          "latitude": lat,
+          "longitude": lon,
+        },
+        timeout=TIMEOUT,
+      )
+      resp.raise_for_status()
+      cloudlog.info(f"HazardReporter: {confirmation} hazard_id={hazard_id}")
+    except Exception as e:
+      cloudlog.error(f"HazardReporter POST /hazards/confirm failed: {e}")

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 import requests
 
+from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.onroad.hazard_scoring import HazardScore, hazard_score_from_api
 
@@ -101,27 +102,29 @@ class HazardAhead:
   A single upcoming hazard, stored with its absolute (lat, lon) so that
   distance and bearing stay accurate as the device moves after a fetch.
   """
-  event_id: str
+  hazard_id: str
   lat: float
   lon: float
-  accel_ms2: float
-  response_summary: dict = field(default_factory=dict)
+  report_count: int = 0
+  confirm_count: int = 0
+  reject_count: int = 0
+  device_previously_reported: bool = False
   score: HazardScore | None = None
 
   @classmethod
   def from_api(cls, data: dict, device_lat: float, device_lon: float) -> 'HazardAhead':
     """
-    The API returns distance_m + bearing_deg relative to the device's position
-    at fetch time. Project those back to an absolute position so we can
-    recompute distance live on subsequent frames.
+    The API now returns latitude/longitude directly on each hazard object,
+    so no projection is needed.
     """
-    lat, lon = _project_position(device_lat, device_lon, data['bearing_deg'], data['distance_m'])
     return cls(
-      event_id=data['event_id'],
-      lat=lat,
-      lon=lon,
-      accel_ms2=data.get('accel_ms2', 0.0),
-      response_summary=data.get('response_summary', {}),
+      hazard_id=data['hazard_id'],
+      lat=data['latitude'],
+      lon=data['longitude'],
+      report_count=int(data.get('report_count', 0)),
+      confirm_count=int(data.get('confirm_count', 0)),
+      reject_count=int(data.get('reject_count', 0)),
+      device_previously_reported=bool(data.get('device_previously_reported', False)),
       score=hazard_score_from_api(data),
     )
 
@@ -150,6 +153,7 @@ class HazardFetcher:
   def __init__(self):
     self._session = requests.Session()
     self._lock = threading.Lock()
+    self._dongle_id = Params().get("DongleId") or "unknown"
 
     # Written by the main thread, read by the worker.
     self._gps: tuple[float, float, float, float, bool] | None = None  # lat, lon, bearing, speed_ms, has_fix
@@ -216,7 +220,7 @@ class HazardFetcher:
     try:
       resp = self._session.get(
         f"{BASE_URL}/hazards/ahead",
-        params={"lat": lat, "lon": lon, "bearing": bearing, "radius_m": radius_m},
+        params={"lat": lat, "lon": lon, "bearing": bearing, "radius_m": radius_m, "dongle_id": self._dongle_id},
         timeout=TIMEOUT,
       )
       resp.raise_for_status()

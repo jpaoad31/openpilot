@@ -8,6 +8,7 @@ from openpilot.selfdrive.ui import UI_BORDER_SIZE
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.onroad.alert_renderer import AlertRenderer
 from openpilot.selfdrive.ui.onroad.bump_detector import BumpDetector
+from openpilot.selfdrive.ui.onroad.demo_triggers import DemoTriggers
 from openpilot.selfdrive.ui.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.onroad.hazard_ahead_renderer import HazardAheadRenderer
 from openpilot.selfdrive.ui.onroad.hazard_fetcher import HazardFetcher
@@ -71,10 +72,14 @@ class AugmentedRoadView(CameraView):
     self.driver_state_renderer = DriverStateRenderer()
 
     self._bump_detector = BumpDetector()
+    self._demo_triggers = DemoTriggers()
     self._hazard_popup = HazardPopup()
     self._hazard_reporter = HazardReporter()
     self._hazard_fetcher = HazardFetcher()
     self._hazard_ahead_renderer = HazardAheadRenderer(self._hazard_fetcher)
+
+    # hazard_ids that were auto-confirmed via bump near a known hazard
+    self._confirmed_hazard_ids: set[str] = set()
 
     self._params = Params()
     self._pm = messaging.PubMaster(['uiDebug'])
@@ -124,21 +129,43 @@ class AugmentedRoadView(CameraView):
     self.driver_state_renderer.render(self._content_rect)
     self._hazard_ahead_renderer.render(self._content_rect)
 
-    # Show hazard popup on bump detection or manual SSH trigger
-    trigger_source = None
-    if self._bump_detector.update(ui_state.sm['carState'].aEgo):
-      diag = self._bump_detector.consume_last_trigger_diag() or {}
-      comma1_metrics.record_bump_trigger(diag)
-      trigger_source = "bump_detector"
-    elif os.path.exists(HAZARD_TRIGGER_FILE):
+    # Show hazard popup on bump detection, demo geofence trigger, or manual SSH trigger
+    bump_fired = self._bump_detector.update(ui_state.sm['carState'].aEgo)
+    demo_fired = not bump_fired and gps.hasFix and self._demo_triggers.check(gps.latitude, gps.longitude)
+    manual_fired = not bump_fired and not demo_fired and os.path.exists(HAZARD_TRIGGER_FILE)
+    if manual_fired:
       os.remove(HAZARD_TRIGGER_FILE)
-      comma1_metrics.record_manual_trigger()
-      trigger_source = "manual"
 
-    if trigger_source is not None and not gui_app.widget_in_stack(self._hazard_popup):
-      self._hazard_reporter.detect(ui_state.sm, trigger_source)
-      self._hazard_popup.set_response_callback(self._hazard_reporter.respond)
-      gui_app.push_widget(self._hazard_popup)
+    hazard_detected = bump_fired or demo_fired
+    if hazard_detected:
+      if bump_fired:
+        diag = self._bump_detector.consume_last_trigger_diag() or {}
+        comma1_metrics.record_bump_trigger(diag)
+        trigger_source = "bump_detector"
+      else:
+        trigger_source = "demo_trigger"
+
+      # Check if this matches a known hazard within 50m
+      nearby = self._find_nearby_known_hazard(gps)
+      if nearby is not None and nearby.device_previously_reported:
+        # Returning user hitting the same hazard — auto-confirm, no popup
+        self._hazard_reporter.confirm(nearby.hazard_id, gps.latitude, gps.longitude)
+        self._confirmed_hazard_ids.add(nearby.hazard_id)
+        comma1_metrics.record_auto_confirm()
+      else:
+        # New hazard, or first time this device encounters a known one — show popup
+        self._show_hazard_popup(gps, trigger_source)
+    elif manual_fired:
+      comma1_metrics.record_manual_trigger()
+      self._show_hazard_popup(gps, "manual")
+
+    # Send confirm/clear for hazards the device visited (< 30m) then departed (> 100m)
+    for hazard_id in self._hazard_ahead_renderer.consume_departed():
+      if hazard_id in self._confirmed_hazard_ids:
+        pass  # already auto-confirmed via bump match
+      elif gps.hasFix:
+        self._hazard_reporter.clear(hazard_id, gps.latitude, gps.longitude)
+        comma1_metrics.record_auto_clear()
 
     # End clipping region
     rl.end_scissor_mode()
@@ -167,6 +194,22 @@ class AugmentedRoadView(CameraView):
         dbg.roadPassHazardMaxSpeedMs = float(v_cap)
         dbg.roadPassHazardMaxAccelMs2 = float(a_cap)
     self._pm.send('uiDebug', msg)
+
+  def _find_nearby_known_hazard(self, gps):
+    """Return the nearest fetched hazard within 50m, or None."""
+    if not gps.hasFix:
+      return None
+    for h in self._hazard_fetcher.get_hazards():
+      if h.distance_m(gps.latitude, gps.longitude) < 50:
+        return h
+    return None
+
+  def _show_hazard_popup(self, gps, trigger_source: str):
+    if gui_app.widget_in_stack(self._hazard_popup):
+      return
+    self._hazard_reporter.detect(ui_state.sm, trigger_source)
+    self._hazard_popup.set_response_callback(self._hazard_reporter.respond)
+    gui_app.push_widget(self._hazard_popup)
 
   def _handle_mouse_press(self, _):
     if not self._hud_renderer.user_interacting() and self._click_callback is not None:
