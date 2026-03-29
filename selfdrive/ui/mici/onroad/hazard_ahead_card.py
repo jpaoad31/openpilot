@@ -29,15 +29,15 @@ class MiciHazardAheadRenderer(HazardAheadRenderer):
                                    line_height=0.86, letter_spacing=0.025)
 
   def _draw_card(self, rect: rl.Rectangle, hazard: HazardAhead, distance_m: float, passed: bool = False) -> None:
-    # Alert height: ~58% of content rect, matching lane change small alerts
-    bg_height = round(rect.height * 0.583)
+    # Alert height: ~83% of content rect for better readability
+    bg_height = round(rect.height * 0.833)
     alpha = 0.90
 
     # Draw gradient background from top
     color = rl.Color(ALERT_BG_COLOR.r, ALERT_BG_COLOR.g, ALERT_BG_COLOR.b, int(255 * alpha))
     translucent = rl.Color(ALERT_BG_COLOR.r, ALERT_BG_COLOR.g, ALERT_BG_COLOR.b, 0)
 
-    solid_height = round(bg_height * 0.2)
+    solid_height = round(bg_height * 0.4)
     rl.draw_rectangle(int(rect.x), int(rect.y), int(rect.width), solid_height, color)
     rl.draw_rectangle_gradient_v(
       int(rect.x), int(rect.y + solid_height),
