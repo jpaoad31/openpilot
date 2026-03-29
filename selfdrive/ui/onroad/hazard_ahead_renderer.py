@@ -3,6 +3,7 @@ import pyray as rl
 
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.onroad.hazard_fetcher import HazardFetcher, HazardAhead, _bearing_delta, _speed_to_bucket
+from openpilot.selfdrive.ui.onroad.hazard_sounds import play_hazard_ahead
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
@@ -109,6 +110,7 @@ class HazardAheadRenderer(Widget):
       # Start the visibility clock the first time this hazard enters warn range.
       if dist <= warn_distance_m and hid not in self._show_start:
         self._show_start[hid] = now
+        play_hazard_ahead()
 
       # Not yet in warning range — skip without suppressing.
       if hid not in self._show_start:
