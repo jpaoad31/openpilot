@@ -184,6 +184,11 @@ class HazardFetcher:
     with self._lock:
       return list(self._hazards)
 
+  def inject_hazard(self, hazard: HazardAhead) -> None:
+    """Manually add a hazard (e.g. for testing). Safe to call from any thread."""
+    with self._lock:
+      self._hazards.append(hazard)
+
   # ── private ──────────────────────────────────────────────────────────────────
 
   def _worker(self) -> None:

@@ -16,7 +16,7 @@ from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
 from openpilot.selfdrive.ui.onroad.bump_detector import BumpDetector
 from openpilot.selfdrive.ui.onroad.demo_triggers import DemoTriggers
-from openpilot.selfdrive.ui.onroad.hazard_fetcher import HazardFetcher
+from openpilot.selfdrive.ui.onroad.hazard_fetcher import HazardFetcher, HazardAhead, _project_position
 from openpilot.selfdrive.ui.onroad.hazard_reporter import HazardReporter
 from openpilot.selfdrive.ui.onroad.hazard_detection_metrics import metrics as comma1_metrics
 from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent
@@ -45,6 +45,10 @@ ROAD_CAM_MIN_SPEED = 10  # m/s (25 mph)
 # Touch this file from SSH to manually trigger the hazard popup:
 #   touch /tmp/hazard_trigger
 HAZARD_TRIGGER_FILE = "/tmp/hazard_trigger"
+
+# Touch this file from SSH to inject a fake hazard 50m ahead:
+#   touch /tmp/hazard_ahead_trigger
+HAZARD_AHEAD_TRIGGER_FILE = "/tmp/hazard_ahead_trigger"
 
 CAM_Y_OFFSET = 20
 
@@ -298,6 +302,17 @@ class AugmentedRoadView(CameraView):
       gps.latitude, gps.longitude, gps.bearingDeg,
       ui_state.sm['carState'].vEgo, gps.hasFix,
     )
+
+    # Manual trigger: inject a fake hazard 50m ahead of current position
+    if os.path.exists(HAZARD_AHEAD_TRIGGER_FILE):
+      os.remove(HAZARD_AHEAD_TRIGGER_FILE)
+      if gps.hasFix:
+        fake_lat, fake_lon = _project_position(gps.latitude, gps.longitude, gps.bearingDeg, 50.0)
+      else:
+        # No GPS fix — use a dummy position
+        fake_lat, fake_lon = 37.7749, -122.4194
+      fake_hazard = HazardAhead(hazard_id=f"fake_{time.monotonic():.0f}", lat=fake_lat, lon=fake_lon)
+      self._hazard_fetcher.inject_hazard(fake_hazard)
 
     # RoadPass: draw ahead warning card
     self._hazard_ahead_renderer.render(self._content_rect)
