@@ -147,6 +147,10 @@ def _get_session():
     opts.inter_op_num_threads = 1
     _ort_session = ort.InferenceSession(str(_MODEL_PATH), sess_options=opts,
                                         providers=["CPUExecutionProvider"])
+    # Warmup: run one dummy inference so the first real call isn't slow
+    dummy = np.zeros((1, 98, 40), dtype=np.float32)
+    input_name = _ort_session.get_inputs()[0].name
+    _ort_session.run(None, {input_name: dummy})
     return _ort_session
 
 
@@ -206,6 +210,8 @@ class VoiceResponseListener:
     ring: collections.deque[np.ndarray] = collections.deque(
       maxlen=WINDOW_SAMPLES // HOP_SAMPLES
     )
+    last_inference = 0.0
+    INFERENCE_INTERVAL = 0.25  # run inference at most every 250ms
 
     while not self._stop_event.is_set():
       sm.update(timeout=100)   # 100 ms poll timeout
@@ -227,6 +233,12 @@ class VoiceResponseListener:
       # Noise gate: skip inference in very loud conditions
       if self._ambient_db > NOISE_GATE_DB:
         continue
+
+      # Throttle inference to avoid overwhelming the CPU
+      now = time.monotonic()
+      if now - last_inference < INFERENCE_INTERVAL:
+        continue
+      last_inference = now
 
       audio = np.concatenate(list(ring))
       self._run_inference(audio)
