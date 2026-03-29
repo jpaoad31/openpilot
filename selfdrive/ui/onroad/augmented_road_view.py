@@ -215,6 +215,8 @@ class AugmentedRoadView(CameraView):
 
     # Fallback to IMU z-axis with gravity subtracted
     accel = ui_state.sm['accelerometer'].acceleration
+    if len(accel.v) < 3:
+      return 0.0  # accelerometer not available yet
     raw_z = accel.v[2]
     self._gravity_baseline = 0.99 * self._gravity_baseline + 0.01 * raw_z
     return raw_z - self._gravity_baseline
