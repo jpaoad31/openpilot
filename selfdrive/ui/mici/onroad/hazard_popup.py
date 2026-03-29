@@ -6,6 +6,7 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.button import Button, ButtonStyle
+from openpilot.selfdrive.ui.onroad.voice_response_listener import VoiceResponseListener
 
 POPUP_TIMEOUT = 15.0
 
@@ -34,6 +35,7 @@ class MiciHazardPopup(BigDialogBase):
     super().__init__()
     self._response_callback: Callable[[str, float], None] | None = None
     self._start_time: float = 0.0
+    self._voice_listener = VoiceResponseListener()
 
     self._no_button = self._child(Button("No", self._handle_no, font_size=BUTTON_FONT, button_style=ButtonStyle.NORMAL))
     self._yes_button = self._child(Button("Yes", self._handle_yes, font_size=BUTTON_FONT, button_style=ButtonStyle.DANGER))
@@ -44,6 +46,7 @@ class MiciHazardPopup(BigDialogBase):
   def show_event(self):
     super().show_event()
     self._start_time = time.monotonic()
+    self._voice_listener.start()
 
   def _elapsed(self) -> float:
     return time.monotonic() - self._start_time
@@ -53,18 +56,29 @@ class MiciHazardPopup(BigDialogBase):
       self._response_callback(answer, self._elapsed())
 
   def _handle_yes(self):
+    self._voice_listener.stop()
     self._fire_response("yes")
     gui_app.pop_widget()
 
   def _handle_no(self):
+    self._voice_listener.stop()
     self._fire_response("no")
     gui_app.pop_widget()
 
+
   def _render(self, rect: rl.Rectangle):
+    voice_answer = self._voice_listener.consume_pending()
+    if voice_answer is not None:
+      self._voice_listener.stop()
+      self._fire_response(voice_answer)
+      gui_app.pop_widget()
+      return
+
     elapsed = self._elapsed()
     progress = max(0.0, 1.0 - elapsed / POPUP_TIMEOUT)
 
     if progress <= 0.0:
+      self._voice_listener.stop()
       self._fire_response("timeout")
       gui_app.pop_widget()
       return

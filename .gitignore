@@ -86,3 +86,6 @@ build/
 .context/
 PLAN.md
 TASK.md
+
+# keyword spotting training data and model artifacts
+tools/keyword_spotting/data/
