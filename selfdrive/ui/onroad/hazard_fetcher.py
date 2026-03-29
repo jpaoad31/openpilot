@@ -18,8 +18,8 @@ EARTH_RADIUS_M = 6_371_000.0
 SAME_ROAD_INTERVAL = 60.0
 # Minimum interval once a direction change has been detected.
 DIRECTION_CHANGE_INTERVAL = 5.0
-# Bearing shift (degrees) that counts as a direction change.
-DIRECTION_CHANGE_THRESHOLD = 45.0
+# Bearing shift (degrees) from the last fetch that counts as a direction change.
+DIRECTION_CHANGE_THRESHOLD = 30.0
 # How long (seconds) to stay in fast-refresh mode after a turn.
 DIRECTION_CHANGE_WINDOW = 15.0
 
@@ -157,7 +157,7 @@ class HazardFetcher:
 
     # Written by the main thread, read by the worker.
     self._gps: tuple[float, float, float, float, bool] | None = None  # lat, lon, bearing, speed_ms, has_fix
-    self._prev_bearing: float | None = None
+    self._last_fetch_bearing: float | None = None  # bearing at the time of last fetch
     self._last_direction_change: float = -DIRECTION_CHANGE_WINDOW  # allow fetch on first call
 
     self._last_fetch_time: float = 0.0
@@ -174,10 +174,9 @@ class HazardFetcher:
     """
     now = time.monotonic()
     with self._lock:
-      if self._prev_bearing is not None:
-        if _bearing_delta(bearing_deg, self._prev_bearing) > DIRECTION_CHANGE_THRESHOLD:
+      if self._last_fetch_bearing is not None:
+        if _bearing_delta(bearing_deg, self._last_fetch_bearing) > DIRECTION_CHANGE_THRESHOLD:
           self._last_direction_change = now
-      self._prev_bearing = bearing_deg
       self._gps = (lat, lon, bearing_deg, speed_ms, has_fix)
 
   def get_hazards(self) -> list[HazardAhead]:
@@ -215,6 +214,8 @@ class HazardFetcher:
     radius_m, _ = _speed_to_bucket(speed_ms)
     self._fetch(lat, lon, bearing, radius_m)
     self._last_fetch_time = now
+    with self._lock:
+      self._last_fetch_bearing = bearing
 
   def _fetch(self, lat: float, lon: float, bearing: float, radius_m: int) -> None:
     try:

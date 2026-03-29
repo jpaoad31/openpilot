@@ -182,6 +182,10 @@ class AugmentedRoadView(CameraView):
     self._hazard_ahead_renderer = MiciHazardAheadRenderer(self._hazard_fetcher)
     self._confirmed_hazard_ids: set[str] = set()
 
+    # IMU fallback state for bump detection when no car is connected
+    self._aego_zero_count: int = 0
+    self._gravity_baseline: float = 9.81
+
     self._pm = messaging.PubMaster(['uiDebug'])
 
   def is_swiping_left(self) -> bool:
@@ -196,6 +200,24 @@ class AugmentedRoadView(CameraView):
       self._offroad_label.set_text("system booting")
     else:
       self._offroad_label.set_text("start the car to\nuse openpilot")
+
+  def _get_bump_accel(self, a_ego: float) -> float:
+    """
+    Select acceleration source for bump detection. Uses carState.aEgo when
+    available; falls back to IMU z-axis (vertical) when no car is connected.
+    """
+    if a_ego != 0.0:
+      self._aego_zero_count = 0
+      return a_ego
+
+    self._aego_zero_count += 1
+    if self._aego_zero_count < 50:
+      return a_ego
+
+    accel = ui_state.sm['accelerometer'].acceleration
+    raw_z = accel.v[2]
+    self._gravity_baseline = 0.99 * self._gravity_baseline + 0.01 * raw_z
+    return raw_z - self._gravity_baseline
 
   def _find_nearby_known_hazard(self, gps):
     """Return the nearest fetched hazard within 50m, or None."""
@@ -294,7 +316,7 @@ class AugmentedRoadView(CameraView):
       self._offroad_label.render(self._rect)
 
     # RoadPass: bump detection, demo triggers, manual SSH trigger
-    bump_fired = self._bump_detector.update(ui_state.sm['carState'].aEgo)
+    bump_fired = self._bump_detector.update(self._get_bump_accel(ui_state.sm['carState'].aEgo))
     demo_fired = not bump_fired and gps.hasFix and self._demo_triggers.check(gps.latitude, gps.longitude)
     manual_fired = not bump_fired and not demo_fired and os.path.exists(HAZARD_TRIGGER_FILE)
     if manual_fired:
