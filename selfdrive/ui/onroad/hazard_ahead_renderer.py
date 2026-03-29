@@ -183,10 +183,10 @@ class HazardAheadRenderer(Widget):
       line_main = "Hazard passed"
     else:
       dist_str = f"{int(distance_m)}m"
-      line_main = f"Hazard ahead  \xb7  {dist_str}"
+      line_main = f"Hazard ahead  -  {dist_str}"
     if hazard.score is not None:
       sc = hazard.score
-      line_sub = f"{sc.tier_label} confidence  \xb7  {sc.score_pct}%"
+      line_sub = f"{sc.tier_label} confidence  -  {sc.score_pct}%"
     else:
       line_sub = "Not enough data yet"
 
