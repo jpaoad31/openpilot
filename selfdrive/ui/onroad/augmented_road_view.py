@@ -81,6 +81,10 @@ class AugmentedRoadView(CameraView):
     # hazard_ids that were auto-confirmed via bump near a known hazard
     self._confirmed_hazard_ids: set[str] = set()
 
+    # IMU fallback state for bump detection when no car is connected
+    self._aego_zero_count: int = 0
+    self._gravity_baseline: float = 9.81
+
     self._params = Params()
     self._pm = messaging.PubMaster(['uiDebug'])
 
@@ -130,7 +134,7 @@ class AugmentedRoadView(CameraView):
     self._hazard_ahead_renderer.render(self._content_rect)
 
     # Show hazard popup on bump detection, demo geofence trigger, or manual SSH trigger
-    bump_fired = self._bump_detector.update(ui_state.sm['carState'].aEgo)
+    bump_fired = self._bump_detector.update(self._get_bump_accel(ui_state.sm['carState'].aEgo))
     demo_fired = not bump_fired and gps.hasFix and self._demo_triggers.check(gps.latitude, gps.longitude)
     manual_fired = not bump_fired and not demo_fired and os.path.exists(HAZARD_TRIGGER_FILE)
     if manual_fired:
@@ -194,6 +198,28 @@ class AugmentedRoadView(CameraView):
         dbg.roadPassHazardMaxSpeedMs = float(v_cap)
         dbg.roadPassHazardMaxAccelMs2 = float(a_cap)
     self._pm.send('uiDebug', msg)
+
+  def _get_bump_accel(self, a_ego: float) -> float:
+    """
+    Select acceleration source for bump detection. Uses carState.aEgo when
+    available; falls back to IMU z-axis (vertical) when no car is connected
+    (aEgo stuck at zero for 50+ frames).
+    """
+    if a_ego != 0.0:
+      self._aego_zero_count = 0
+      return a_ego
+
+    self._aego_zero_count += 1
+    if self._aego_zero_count < 50:
+      return a_ego  # not enough zeros yet, still trust carState
+
+    # Fallback to IMU z-axis with gravity subtracted
+    accel = ui_state.sm['accelerometer'].acceleration
+    if len(accel.v) < 3:
+      return 0.0  # accelerometer not available yet
+    raw_z = accel.v[2]
+    self._gravity_baseline = 0.99 * self._gravity_baseline + 0.01 * raw_z
+    return raw_z - self._gravity_baseline
 
   def _find_nearby_known_hazard(self, gps):
     """Return the nearest fetched hazard within 50m, or None."""

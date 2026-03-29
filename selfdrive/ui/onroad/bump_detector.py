@@ -25,15 +25,22 @@ class BumpDetector:
   Returns True on the frame a bump is first detected.
   """
 
+  # Ignore acceleration data for this long after creation to avoid false triggers
+  # from sensor initialization spikes.
+  STARTUP_GRACE_PERIOD = 3.0  # seconds
+
   def __init__(self):
     # Circular buffer of (timestamp, aEgo) samples
     self._history: deque[tuple[float, float]] = deque()
-    self._last_trigger: float = -BUMP_COOLDOWN  # allow immediate trigger on startup
+    self._created_at: float = time.monotonic()
+    self._last_trigger: float = -BUMP_COOLDOWN  # allow immediate trigger after grace period
     # Filled on the frame that returns True; consumed by instrumentation via consume_last_trigger_diag().
     self._trigger_diag: dict[str, float] | None = None
 
   def update(self, a_ego: float) -> bool:
     now = time.monotonic()
+    if now - self._created_at < self.STARTUP_GRACE_PERIOD:
+      return False
     self._history.append((now, a_ego))
 
     # Prune samples older than the look-back window

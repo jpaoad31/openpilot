@@ -1,3 +1,4 @@
+import os
 import time
 import numpy as np
 import pyray as rl
@@ -7,10 +8,17 @@ from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.alert_renderer import AlertRenderer
 from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
+from openpilot.selfdrive.ui.mici.onroad.hazard_ahead_card import MiciHazardAheadRenderer
+from openpilot.selfdrive.ui.mici.onroad.hazard_popup import MiciHazardPopup
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
+from openpilot.selfdrive.ui.onroad.bump_detector import BumpDetector
+from openpilot.selfdrive.ui.onroad.demo_triggers import DemoTriggers
+from openpilot.selfdrive.ui.onroad.hazard_fetcher import HazardFetcher
+from openpilot.selfdrive.ui.onroad.hazard_reporter import HazardReporter
+from openpilot.selfdrive.ui.onroad.hazard_detection_metrics import metrics as comma1_metrics
 from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets import Widget
@@ -33,6 +41,10 @@ class BookmarkState(IntEnum):
 
 WIDE_CAM_MAX_SPEED = 5.0  # m/s (10 mph)
 ROAD_CAM_MIN_SPEED = 10  # m/s (25 mph)
+
+# Touch this file from SSH to manually trigger the hazard popup:
+#   touch /tmp/hazard_trigger
+HAZARD_TRIGGER_FILE = "/tmp/hazard_trigger"
 
 CAM_Y_OFFSET = 20
 
@@ -161,7 +173,19 @@ class AugmentedRoadView(CameraView):
 
     self._fade_texture = gui_app.texture("icons_mici/onroad/onroad_fade.png")
 
-    # debug
+    # RoadPass hazard system
+    self._bump_detector = BumpDetector()
+    self._demo_triggers = DemoTriggers()
+    self._hazard_popup = MiciHazardPopup()
+    self._hazard_reporter = HazardReporter()
+    self._hazard_fetcher = HazardFetcher()
+    self._hazard_ahead_renderer = MiciHazardAheadRenderer(self._hazard_fetcher)
+    self._confirmed_hazard_ids: set[str] = set()
+
+    # IMU fallback state for bump detection when no car is connected
+    self._aego_zero_count: int = 0
+    self._gravity_baseline: float = 9.81
+
     self._pm = messaging.PubMaster(['uiDebug'])
 
   def is_swiping_left(self) -> bool:
@@ -176,6 +200,42 @@ class AugmentedRoadView(CameraView):
       self._offroad_label.set_text("system booting")
     else:
       self._offroad_label.set_text("start the car to\nuse openpilot")
+
+  def _get_bump_accel(self, a_ego: float) -> float:
+    """
+    Select acceleration source for bump detection. Uses carState.aEgo when
+    available; falls back to IMU z-axis (vertical) when no car is connected.
+    """
+    if a_ego != 0.0:
+      self._aego_zero_count = 0
+      return a_ego
+
+    self._aego_zero_count += 1
+    if self._aego_zero_count < 50:
+      return a_ego
+
+    accel = ui_state.sm['accelerometer'].acceleration
+    if len(accel.v) < 3:
+      return 0.0  # accelerometer not available yet
+    raw_z = accel.v[2]
+    self._gravity_baseline = 0.99 * self._gravity_baseline + 0.01 * raw_z
+    return raw_z - self._gravity_baseline
+
+  def _find_nearby_known_hazard(self, gps):
+    """Return the nearest fetched hazard within 50m, or None."""
+    if not gps.hasFix:
+      return None
+    for h in self._hazard_fetcher.get_hazards():
+      if h.distance_m(gps.latitude, gps.longitude) < 50:
+        return h
+    return None
+
+  def _show_hazard_popup(self, gps, trigger_source: str):
+    if gui_app.widget_in_stack(self._hazard_popup):
+      return
+    self._hazard_reporter.detect(ui_state.sm, trigger_source)
+    self._hazard_popup.set_response_callback(self._hazard_reporter.respond)
+    gui_app.push_widget(self._hazard_popup)
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
     # Don't trigger click callback if bookmark was triggered
@@ -232,14 +292,22 @@ class AugmentedRoadView(CameraView):
       self._alert_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
 
+    # RoadPass: feed GPS into the background hazard fetcher
+    gps = ui_state.sm['gpsLocationExternal']
+    self._hazard_fetcher.update_gps(
+      gps.latitude, gps.longitude, gps.bearingDeg,
+      ui_state.sm['carState'].vEgo, gps.hasFix,
+    )
+
+    # RoadPass: draw ahead warning card
+    self._hazard_ahead_renderer.render(self._content_rect)
+
     # Draw fake rounded border
     rl.draw_rectangle_rounded_lines_ex(self._content_rect, 0.2 * 1.02, 10, 50, rl.BLACK)
 
     # End clipping region
     rl.end_scissor_mode()
 
-    # Custom UI extension point - add custom overlays here
-    # Use self._content_rect for positioning within camera bounds
     self._confidence_ball.render(self.rect)
 
     self._bookmark_icon.render(self.rect)
@@ -248,6 +316,39 @@ class AugmentedRoadView(CameraView):
     if not ui_state.started:
       rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
       self._offroad_label.render(self._rect)
+
+    # RoadPass: bump detection, demo triggers, manual SSH trigger
+    bump_fired = self._bump_detector.update(self._get_bump_accel(ui_state.sm['carState'].aEgo))
+    demo_fired = not bump_fired and gps.hasFix and self._demo_triggers.check(gps.latitude, gps.longitude)
+    manual_fired = not bump_fired and not demo_fired and os.path.exists(HAZARD_TRIGGER_FILE)
+    if manual_fired:
+      os.remove(HAZARD_TRIGGER_FILE)
+
+    hazard_detected = bump_fired or demo_fired
+    if hazard_detected:
+      if bump_fired:
+        diag = self._bump_detector.consume_last_trigger_diag() or {}
+        comma1_metrics.record_bump_trigger(diag)
+        trigger_source = "bump_detector"
+      else:
+        trigger_source = "demo_trigger"
+
+      nearby = self._find_nearby_known_hazard(gps)
+      if nearby is not None and nearby.device_previously_reported:
+        self._hazard_reporter.confirm(nearby.hazard_id, gps.latitude, gps.longitude)
+        self._confirmed_hazard_ids.add(nearby.hazard_id)
+        comma1_metrics.record_auto_confirm()
+      else:
+        self._show_hazard_popup(gps, trigger_source)
+    elif manual_fired:
+      comma1_metrics.record_manual_trigger()
+      self._show_hazard_popup(gps, "manual")
+
+    # RoadPass: send cleared for hazards visited then departed without a bump
+    for hazard_id in self._hazard_ahead_renderer.consume_departed():
+      if hazard_id not in self._confirmed_hazard_ids and gps.hasFix:
+        self._hazard_reporter.clear(hazard_id, gps.latitude, gps.longitude)
+        comma1_metrics.record_auto_clear()
 
     # publish uiDebug
     msg = messaging.new_message('uiDebug')
