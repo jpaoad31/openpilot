@@ -22,9 +22,12 @@ SHOW_TIMEOUT = 30.0  # seconds
 
 # Proximity thresholds for the confirm/clear lifecycle:
 #   VISIT_RADIUS_M  — device must come within this distance to count as "visited"
-#   DEPART_RADIUS_M — after visiting, device must exceed this distance to trigger confirm/clear
+#   DEPART_TARGET_S  — seconds of travel after visiting before suppressing (scales with speed)
+#   DEPART_RADIUS_MIN/MAX — floor/ceiling so the depart radius stays reasonable
 VISIT_RADIUS_M = 30.0
-DEPART_RADIUS_M = 100.0
+DEPART_TARGET_S = 3.0   # suppress ~3 seconds after passing
+DEPART_RADIUS_MIN = 40.0   # minimum depart radius (low speed / standstill)
+DEPART_RADIUS_MAX = 200.0  # maximum depart radius (highway)
 
 # Bearing window that counts as "ahead" (for card display only).
 AHEAD_THRESHOLD_DEG = 90.0
@@ -75,7 +78,7 @@ class HazardAheadRenderer(Widget):
 
     _, warn_distance_m = _speed_to_bucket(speed_ms)
 
-    closest = self._find_closest(hazards, device_lat, device_lon, device_bearing, warn_distance_m)
+    closest = self._find_closest(hazards, device_lat, device_lon, device_bearing, warn_distance_m, speed_ms)
     if closest is None:
       return
 
@@ -90,6 +93,7 @@ class HazardAheadRenderer(Widget):
     device_lon: float,
     device_bearing: float,
     warn_distance_m: int,
+    speed_ms: float = 0.0,
   ) -> tuple[HazardAhead, float] | None:
     now = time.monotonic()
     closest_hazard = None
@@ -120,7 +124,9 @@ class HazardAheadRenderer(Widget):
         self._visited.add(hid)
 
       # Depart: device visited and is now far enough away — trigger confirm/clear.
-      if hid in self._visited and dist > DEPART_RADIUS_M:
+      # Radius scales with speed so "Hazard passed" shows for ~3 seconds at any speed.
+      depart_radius = max(DEPART_RADIUS_MIN, min(DEPART_RADIUS_MAX, VISIT_RADIUS_M + speed_ms * DEPART_TARGET_S))
+      if hid in self._visited and dist > depart_radius:
         self._suppressed.add(hid)
         self._newly_departed.append(hid)
         continue
