@@ -25,6 +25,7 @@ Audio pipeline
   result is consumed by HazardPopup._render() on the UI thread.
 """
 
+import time
 import threading
 import collections
 import numpy as np
